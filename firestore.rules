@@ -1,0 +1,58 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper: is the request from a signed-in user? ──
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // ── Helper: does this user have an admin doc? ──
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // ── foods collection ──────────────────────────────
+    // Any signed-in user can read (for the menu).
+    // Only admins can create, update, or delete.
+    match /foods/{foodId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── settings collection (settings/app) ────────────
+    // settings/app readable by any signed-in user, writable only by admins.
+    match /settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── admins collection ─────────────────────────────
+    // A user can read only their own admin doc (to check if they're admin).
+    // Nobody can write via the client — admin docs are created manually
+    // in the Firebase Console or via the Admin SDK.
+    match /admins/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // ── tokens collection ─────────────────────────────
+    // - A user can read only their own tokens; admins can read all tokens.
+    // - No client can create or delete tokens (server/console only).
+    // - Only admins can update a token, and only to change status from "active" to "served"
+    //   with servedAt and servedBy. Every other field must stay unchanged.
+    match /tokens/{tokenId} {
+      allow read: if isSignedIn() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create, delete: if false;
+      allow update: if isAdmin()
+        && resource.data.status == "active"
+        && request.resource.data.status == "served"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'servedAt', 'servedBy'])
+        && request.resource.data.servedBy == request.auth.uid;
+    }
+
+    // ── Everything else is denied by default ──────────
+    // No match = no access. Orders, users, etc. remain denied.
+  }
+}
